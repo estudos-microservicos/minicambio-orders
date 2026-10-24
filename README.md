@@ -25,3 +25,12 @@ dotnet run --project src/MiniCambio.Orders.Api
 ```
 
 A API sobe em `http://localhost:5000`.
+
+## Docker
+
+```powershell
+docker build -t minicambio-orders-api .
+```
+
+A imagem roda como usuário não-root e escuta na porta `8080`. Para subir o sistema inteiro (bancos, APIs e
+frontend), use o `docker-compose.yml` do repositório `minicambio-infra`.

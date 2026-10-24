@@ -1,0 +1,20 @@
+# Artefatos de build do host (o obj/ do Windows quebraria o restore no Linux)
+**/bin/
+**/obj/
+
+# Testes não entram na imagem
+tests/
+
+# Git, IDEs e arquivos locais
+.git/
+.vs/
+.vscode/
+.idea/
+**/*.user
+.env
+
+# Arquivos que não fazem parte do build
+Dockerfile
+.dockerignore
+compose*.yml
+*.md
