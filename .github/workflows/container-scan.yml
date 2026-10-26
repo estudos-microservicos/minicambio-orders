@@ -1,0 +1,85 @@
+name: Container Scan
+
+# Chamado pelo ci.yml. A varredura nunca reprova o pipeline: se encontrar problemas,
+# emite um alerta (annotation + resumo da execução) e o job termina com sucesso.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ${{ github.event.repository.name }}:${{ github.sha }}
+  TRIVY_VERSION: v0.76.1
+
+jobs:
+  scan:
+    name: Trivy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Construir imagem
+        run: docker build --tag "$IMAGE" .
+
+      # trivy-action fixada por SHA: as tags do repositório foram sequestradas em mar/2026
+      # (GHSA-69fq-xp46-6x23), então tag sozinha não é confiável.
+      - name: Varrer vulnerabilidades e segredos da imagem
+        id: image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          output: trivy-image.txt
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Varrer configuração do Dockerfile
+        id: config
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: Dockerfile
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          output: trivy-config.txt
+          # Reaproveita o binário e o cache do passo anterior (salvar a mesma chave de novo gera aviso).
+          skip-setup-trivy: true
+          cache: false
+
+      - name: Publicar resultado
+        if: ${{ !cancelled() }}
+        env:
+          IMAGE_OUTCOME: ${{ steps.image.outcome }}
+          CONFIG_OUTCOME: ${{ steps.config.outcome }}
+        run: |
+          report() {
+            echo "### $1"
+            if [ "$2" = success ]; then
+              echo "Nenhum achado HIGH/CRITICAL."
+            elif [ -s "$3" ]; then
+              echo '```text'
+              cat "$3"
+              echo '```'
+            else
+              echo "A varredura não foi concluída (resultado: $2). Veja o log do passo."
+            fi
+          }
+
+          {
+            echo "## Segurança do container"
+            report "Imagem $IMAGE" "$IMAGE_OUTCOME" trivy-image.txt
+            report "Dockerfile" "$CONFIG_OUTCOME" trivy-config.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$IMAGE_OUTCOME" != success ] || [ "$CONFIG_OUTCOME" != success ]; then
+            echo "::warning title=Segurança do container::A verificação de segurança não passou (imagem: $IMAGE_OUTCOME, Dockerfile: $CONFIG_OUTCOME). Detalhes no resumo da execução."
+            cat trivy-image.txt trivy-config.txt 2>/dev/null || true
+          fi

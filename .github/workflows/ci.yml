@@ -39,3 +39,7 @@ jobs:
 
       - name: Executar testes
         run: dotnet test "$SOLUTION" --configuration Release --no-build
+
+  container-scan:
+    name: Segurança do container
+    uses: ./.github/workflows/container-scan.yml
