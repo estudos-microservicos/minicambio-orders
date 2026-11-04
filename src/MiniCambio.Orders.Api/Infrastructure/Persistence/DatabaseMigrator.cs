@@ -20,18 +20,25 @@ public sealed class DatabaseOptions
 public static class DatabaseMigrator
 {
     /// <summary>
-    /// Aplica as migrations quando <c>Database__ApplyMigrationsOnStartup=true</c> (ligado no compose).
-    /// No Kubernetes isso vai virar um Job/init container, para que várias réplicas subindo ao mesmo tempo
-    /// não disputem a mesma migration.
+    /// Aplica as migrations só quando <c>Database__ApplyMigrationsOnStartup=true</c> (ligado no compose).
     /// </summary>
     public static async Task ApplyMigrationsIfConfiguredAsync(this WebApplication app)
     {
         var options = app.Services.GetRequiredService<IOptions<DatabaseOptions>>().Value;
-        if (!options.ApplyMigrationsOnStartup)
+        if (options.ApplyMigrationsOnStartup)
         {
-            return;
+            await app.MigrateDatabaseAsync();
         }
+    }
 
+    /// <summary>
+    /// Aplica as migrations pendentes, tentando de novo enquanto o banco não responde.
+    /// No Kubernetes é chamado pelo Job de migração (argumento <c>--migrate-only</c>), que roda uma vez só,
+    /// para que várias réplicas subindo ao mesmo tempo não disputem a mesma migration.
+    /// </summary>
+    public static async Task MigrateDatabaseAsync(this WebApplication app)
+    {
+        var options = app.Services.GetRequiredService<IOptions<DatabaseOptions>>().Value;
         var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(DatabaseMigrator));
 
         // O banco pode ainda estar terminando de subir: tenta algumas vezes antes de desistir.

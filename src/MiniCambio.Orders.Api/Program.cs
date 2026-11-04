@@ -42,6 +42,13 @@ builder.Services.AddInfrastructure();
 
 var app = builder.Build();
 
+// Modo do Job de migração: aplica as migrations e encerra, sem subir o servidor HTTP.
+if (args.Contains("--migrate-only"))
+{
+    await app.MigrateDatabaseAsync();
+    return;
+}
+
 await app.ApplyMigrationsIfConfiguredAsync();
 
 app.UseMiddleware<CorrelationIdMiddleware>();
