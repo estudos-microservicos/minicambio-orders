@@ -5,7 +5,7 @@ namespace MiniCambio.Orders.Api.Application.Orders;
 
 public sealed class ConfirmOrderHandler(
     IOrderRepository orders,
-    IPaymentsClient paymentsClient,
+    IPaymentRequestPublisher paymentRequests,
     TimeProvider timeProvider,
     ILogger<ConfirmOrderHandler> logger)
 {
@@ -36,19 +36,20 @@ public sealed class ConfirmOrderHandler(
         await orders.SaveChangesAsync(cancellationToken);
         logger.LogInformation("Ordem {OrderId} confirmada", order.Id);
 
-        // 5. Solicita o pagamento. Se falhar, a ordem fica em Confirmed e o worker de reconciliação tenta de novo.
+        // 5. Publica o pedido de pagamento no Kafka. A ordem já está gravada como Confirmed: se a publicação falhar,
+        // ela fica assim e o worker de reconciliação publica de novo (o Confirmed funciona como uma "caixa de saída").
         try
         {
-            var payment = await paymentsClient.RequestPaymentAsync(CreatePaymentRequest.From(order), cancellationToken);
-            order.MarkPaymentRequested(payment.Id, timeProvider.GetUtcNow());
+            await paymentRequests.PublishAsync(PaymentRequestedMessage.From(order), cancellationToken);
+            order.MarkPaymentRequested(timeProvider.GetUtcNow());
             await orders.SaveChangesAsync(cancellationToken);
-            logger.LogInformation("Pagamento {PaymentId} solicitado para a ordem {OrderId}", payment.Id, order.Id);
+            logger.LogInformation("Pedido de pagamento da ordem {OrderId} publicado", order.Id);
         }
         catch (ServiceUnavailableException ex)
         {
             logger.LogWarning(
                 ex,
-                "Não foi possível solicitar o pagamento da ordem {OrderId}; ela fica em Confirmed e o worker tentará de novo",
+                "Não foi possível publicar o pedido de pagamento da ordem {OrderId}; ela fica em Confirmed e o worker tentará de novo",
                 order.Id);
         }
 

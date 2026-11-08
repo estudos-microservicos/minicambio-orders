@@ -1,17 +1,18 @@
 # minicambio-orders
 
 Serviço **Orders** do MiniCâmbio, um sistema de câmbio simplificado usado como projeto de estudo.
-Cria ordens a partir de cotações do **Rates**, permite confirmá-las ou cancelá-las e acompanha o pagamento no
-**Payments**. É o único serviço chamado pelo frontend (`minicambio-web`, via `/api` no nginx).
+Cria ordens a partir de cotações do **Rates** (HTTP), permite confirmá-las ou cancelá-las e conversa com o
+**Payments** pelo **Kafka**. É o único serviço chamado pelo frontend (`minicambio-web`, via `/api` no nginx).
 
 ## Fluxo
 
 1. `POST /api/v1/orders` pede uma cotação ao Rates (`POST /api/v1/quotes`) e grava a ordem em `Quoted`, com a
    taxa, o valor em BRL e o prazo da cotação (60s). **Não** solicita pagamento.
-2. `POST /api/v1/orders/{id}/confirm` confirma a ordem e solicita o pagamento ao Payments
-   (`POST /api/v1/payments`). Se o Payments estiver fora, a ordem fica em `Confirmed` e o worker tenta de novo.
+2. `POST /api/v1/orders/{id}/confirm` confirma a ordem e publica o pedido de pagamento no Kafka (tópico
+   `minicambio.payment-requests`). Se o Kafka estiver fora, a ordem fica em `Confirmed` e o worker publica de novo.
 3. `DELETE /api/v1/orders/{id}` cancela (logicamente) uma ordem ainda em `Quoted`.
-4. O worker de reconciliação acompanha o pagamento (`GET /api/v1/payments/{id}`) até `Completed` ou `Failed`.
+4. O `PaymentResultsConsumer` lê o tópico `minicambio.payment-results`, onde o Payments publica o resultado, e
+   finaliza a ordem em `Completed` ou `Failed` (sem consultar o Payments). Ver [Mensageria](#mensageria).
 
 ## Máquina de estados
 
@@ -35,12 +36,12 @@ Quoted ─────┼──► Expired              (prazo da cotação venc
 | Método | Rota | Resposta |
 |---|---|---|
 | POST | `/api/v1/orders` | header `Idempotency-Key` obrigatório (1 a 100 caracteres); body `{ currency, side, foreignAmount, beneficiary: { name, country, accountNumber } }` → **201** + `Location` com a ordem em `Quoted`; **200** com a ordem existente se a chave já foi usada; 400 validação (inclusive header ausente, em `errors["Idempotency-Key"]`); 422 se o Rates recusar (repassa o `detail` do Rates, ex.: moeda não suportada); 503 se o Rates estiver fora (nada é gravado) |
-| POST | `/api/v1/orders/{id}/confirm` | **200** com a ordem (`PaymentRequested`, ou `Confirmed` se o Payments estiver fora); repetir devolve 200 sem mudar nada; 404; 422 se a cotação expirou (a ordem passa a `Expired`), se foi cancelada etc. |
+| POST | `/api/v1/orders/{id}/confirm` | **200** com a ordem (`PaymentRequested`, ou `Confirmed` se o Kafka estiver fora; `paymentId` só chega com o resultado); repetir devolve 200 sem mudar nada; 404; 422 se a cotação expirou (a ordem passa a `Expired`), se foi cancelada etc. |
 | DELETE | `/api/v1/orders/{id}` | **204** (também se já estava cancelada); 404; 422 se não estiver em `Quoted` |
 | GET | `/api/v1/orders/{id}` | 200 ou 404 |
 | GET | `/api/v1/orders?status=&page=&pageSize=` | 200 `{ items, page, pageSize, totalCount, servedBy }`, ordenado por `createdAt` desc |
 | GET | `/health/live` | 200 se o processo responde (sem dependências) |
-| GET | `/health/ready` | 200 se o banco responde (Rates e Payments ficam de fora de propósito) |
+| GET | `/health/ready` | 200 se o banco responde (Rates e Kafka ficam de fora de propósito) |
 
 Listagem: `status` é opcional e case-insensitive (vazio = todos); `page` padrão 1 (mínimo 1); `pageSize` padrão 20
 (de 1 a 100). Fora disso → 400 com `errors` por campo; valor não numérico em `page`/`pageSize` → 400
@@ -53,7 +54,8 @@ updatedAt, canConfirm, canCancel, servedBy`. `failureReason` vem do Payments (`B
 
 Erros seguem ProblemDetails (`title` e `detail` em português, `correlationId`; 400 traz `errors` por campo em
 camelCase, como `beneficiary.name`). Todas as respostas devolvem o header `X-Correlation-Id` (o recebido ou um novo),
-que também é repassado nas chamadas ao Rates e ao Payments. Em `Development`, a documentação fica em `/scalar`
+que também é repassado nas chamadas ao Rates e, como header, nos pedidos publicados no Kafka. Em `Development`, a
+documentação fica em `/scalar`
 (OpenAPI em `/openapi/v1.json`).
 
 ### Mensagens de 422
@@ -71,7 +73,7 @@ que também é repassado nas chamadas ao Rates e ao Payments. Em `Development`, 
 - **Criação**: a mesma `Idempotency-Key` devolve a ordem já criada. Duas requisições simultâneas com a mesma chave
   são resolvidas pelo índice único em `idempotency_key` (a violação `23505` devolve a ordem que gravou primeiro).
 - **Confirmação** e **cancelamento** repetidos devolvem sucesso sem mudar nada.
-- **Clientes HTTP** (`RatesClient`, `PaymentsClient`): `AddStandardResilienceHandler()` com retry exponencial
+- **Cliente HTTP** do Rates (`RatesClient`): `AddStandardResilienceHandler()` com retry exponencial
   (3 novas tentativas, espera inicial de 500ms), timeout de 5s por tentativa e 15s no total, e circuit breaker.
   Falha de rede, timeout, circuito aberto ou 5xx depois das tentativas = serviço indisponível.
 
@@ -82,12 +84,30 @@ que também é repassado nas chamadas ao Rates e ao Payments. Em `Development`, 
 `SELECT ... FOR UPDATE SKIP LOCKED` dentro de uma transação:
 
 1. `Quoted` com a cotação vencida → `Expired`;
-2. `Confirmed` → solicita o pagamento (seguro porque o Payments é idempotente por `orderId`) → `PaymentRequested`;
-3. `PaymentRequested` → consulta o pagamento: `Completed` → `Completed`; `Failed` → `Failed` com o `failureReason`
-   do Payments; `Pending`/`Processing` → nada.
+2. `Confirmed` → publica de novo o pedido de pagamento no Kafka (seguro porque o Payments é idempotente por
+   `orderId`) → `PaymentRequested`. Se o Kafka estiver fora, o lote para na primeira falha e o próximo ciclo tenta.
 
 O `SKIP LOCKED` permite várias réplicas no Kubernetes sem processar a mesma ordem duas vezes. Erro em uma ordem é
-logado e não derruba o worker. Esse polling será substituído por eventos (mensageria) numa etapa futura.
+logado e não derruba o worker. O resultado dos pagamentos não é mais consultado aqui: ele chega pelo Kafka.
+
+## Mensageria
+
+| Tópico | Sentido | Quem publica / consome no Orders |
+|---|---|---|
+| `minicambio.payment-requests` | Orders → Payments | `KafkaPaymentRequestPublisher` (ao confirmar e no worker) |
+| `minicambio.payment-results` | Payments → Orders | `PaymentResultsConsumer` → `PaymentResultHandler` |
+
+- A chave das mensagens é o `orderId`: tudo de uma ordem cai na mesma partição, em ordem.
+- O status `Confirmed` funciona como "caixa de saída": a ordem é gravada antes de publicar, e só passa a
+  `PaymentRequested` depois que o broker confirma a gravação. O producer desiste em 5 s (`MessageTimeoutMs`).
+- O consumidor marca o offset só depois de gravar a ordem (entrega "pelo menos uma vez"). Resultado repetido é
+  ignorado (ordem já finalizada). Se o resultado chegar com a ordem ainda em `Confirmed`, ela passa por
+  `PaymentRequested` e é finalizada. Erro transitório (banco fora) faz o consumidor voltar à mesma mensagem e tentar
+  de novo em 5 s; mensagem ilegível é logada e descartada.
+- As réplicas consomem no mesmo grupo (`orders-api`): o Kafka divide as 3 partições entre elas.
+- O `paymentId` da ordem é preenchido quando o resultado chega (antes disso o Orders não sabe o id criado pelo
+  Payments).
+- Formato das mensagens: ver o README do `minicambio-payments`.
 
 ## Variáveis de ambiente
 
@@ -96,12 +116,15 @@ logado e não derruba o worker. Esse polling será substituído por eventos (men
 | `ConnectionStrings__Default` | — (obrigatória) | Connection string do Postgres |
 | `Database__ApplyMigrationsOnStartup` | `false` | Aplica as migrations ao subir (`true` no compose; no Kubernetes vira Job/init container) |
 | `Services__RatesApi` | — (obrigatória) | URL base do Rates (ex.: `http://rates-api:8080`) |
-| `Services__PaymentsApi` | — (obrigatória) | URL base do Payments (ex.: `http://payments-api:8080`) |
+| `Kafka__BootstrapServers` | — (obrigatória) | Endereço do Kafka (ex.: `kafka:9092`) |
+| `Kafka__PaymentRequestsTopic` | `minicambio.payment-requests` | Tópico dos pedidos de pagamento |
+| `Kafka__PaymentResultsTopic` | `minicambio.payment-results` | Tópico dos resultados, consumido pelo Orders |
+| `Kafka__ConsumerGroupId` | `orders-api` | Grupo de consumo; as réplicas dividem as partições entre si |
 | `Orders__ReconciliationIntervalSeconds` | `5` | Intervalo do worker de reconciliação, em segundos |
 
 As URLs e o intervalo são validados na inicialização: a API não sobe com configuração inválida. Em `Development`,
 o `appsettings.Development.json` já aponta para o Postgres do `compose.dev.yml`, liga as migrations e usa
-`http://localhost:5001` (Rates) e `http://localhost:5002` (Payments).
+`http://localhost:5001` (Rates) e o Kafka em `localhost:9094` (a porta para o host do Kafka do `minicambio-infra`).
 
 ## Requisitos
 
@@ -112,11 +135,13 @@ o `appsettings.Development.json` já aponta para o Postgres do `compose.dev.yml`
 
 ```powershell
 docker compose -f compose.dev.yml up -d           # só o Postgres, na porta 5435
+docker compose -f ../minicambio-infra/docker-compose.yml up -d kafka kafka-topics   # Kafka em localhost:9094
 dotnet run --project src/MiniCambio.Orders.Api    # http://localhost:5000 (Scalar em /scalar)
 ```
 
-O Rates (porta 5001) e o Payments (porta 5002) precisam estar rodando para criar e confirmar ordens. Sem o Rates a
-criação devolve 503; sem o Payments a confirmação deixa a ordem em `Confirmed` até ele voltar.
+O Rates (porta 5001) precisa estar rodando para criar ordens; sem ele a criação devolve 503. Sem o Kafka a
+confirmação deixa a ordem em `Confirmed` até ele voltar; sem o Payments a ordem fica em `PaymentRequested`, com o
+pedido esperando no tópico.
 
 ## Testes
 
@@ -125,12 +150,13 @@ dotnet test MiniCambio.Orders.slnx
 ```
 
 - `tests/MiniCambio.Orders.UnitTests`: toda a máquina de estados (transições válidas e inválidas, `CanBeConfirmed`
-  e `CanBeCancelled`), os handlers com fakes (Rates fora/recusando, Payments fora, idempotência de criação,
-  confirmação e cancelamento), os validadores, os clientes HTTP (mapeamento de status e falhas) e o handler de
-  correlation id.
-- `tests/MiniCambio.Orders.IntegrationTests`: endpoints contra um Postgres real (Testcontainers), com Rates e
-  Payments falsos e sem o worker hospedado; o ciclo de reconciliação é chamado diretamente, com `FakeTimeProvider`
-  e um banco próprio por teste.
+  e `CanBeCancelled`), os handlers com fakes (Rates fora/recusando, Kafka fora, idempotência de criação,
+  confirmação e cancelamento, resultados de pagamento repetidos ou fora de hora), os validadores, o cliente HTTP do
+  Rates (mapeamento de status e falhas) e o handler de correlation id.
+- `tests/MiniCambio.Orders.IntegrationTests`: endpoints contra um Postgres real (Testcontainers), com o Rates e o
+  publicador do Kafka falsos, sem o worker e sem o consumidor hospedados; o ciclo de reconciliação e o
+  `PaymentResultHandler` são chamados diretamente, com `FakeTimeProvider` e um banco próprio por teste. Não há Kafka
+  nos testes: o broker real é exercitado pelo compose/Kubernetes e pelo `smoke-test.ps1` do `minicambio-infra`.
 
 ## Migrations
 

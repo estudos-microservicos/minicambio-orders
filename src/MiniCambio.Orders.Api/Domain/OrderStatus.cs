@@ -17,10 +17,10 @@ public enum OrderStatus
     /// <summary>Cotada, aguardando confirmação ou cancelamento dentro do prazo da cotação.</summary>
     Quoted,
 
-    /// <summary>Confirmada pelo cliente; o pagamento ainda não foi aceito pelo Payments.</summary>
+    /// <summary>Confirmada pelo cliente; o pedido de pagamento ainda não foi publicado no Kafka.</summary>
     Confirmed,
 
-    /// <summary>Pagamento solicitado ao Payments, aguardando o resultado.</summary>
+    /// <summary>Pedido de pagamento publicado no Kafka, aguardando o resultado do Payments.</summary>
     PaymentRequested,
 
     /// <summary>Pagamento concluído (final).</summary>

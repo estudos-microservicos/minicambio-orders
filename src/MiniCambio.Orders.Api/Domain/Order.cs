@@ -176,39 +176,48 @@ public sealed class Order
         UpdatedAt = now;
     }
 
-    /// <summary>Confirmed → PaymentRequested, guardando o id do pagamento criado no Payments.</summary>
-    public void MarkPaymentRequested(Guid paymentId, DateTimeOffset now)
+    /// <summary>
+    /// Confirmed → PaymentRequested: o pedido de pagamento foi publicado no Kafka. O id do pagamento ainda não é
+    /// conhecido (quem cria o pagamento é o Payments); ele chega junto com o resultado.
+    /// </summary>
+    public void MarkPaymentRequested(DateTimeOffset now)
+    {
+        EnsureStatus(OrderStatus.Confirmed, "O pagamento só pode ser solicitado para ordens confirmadas.");
+
+        Status = OrderStatus.PaymentRequested;
+        UpdatedAt = now;
+    }
+
+    /// <summary>PaymentRequested → Completed, guardando o id do pagamento informado pelo Payments.</summary>
+    public void MarkCompleted(Guid paymentId, DateTimeOffset now)
+    {
+        EnsurePaymentId(paymentId);
+        EnsureStatus(OrderStatus.PaymentRequested, "Só ordens com pagamento solicitado podem ser concluídas.");
+
+        Status = OrderStatus.Completed;
+        PaymentId = paymentId;
+        UpdatedAt = now;
+    }
+
+    /// <summary>PaymentRequested → Failed, com o id do pagamento e o motivo informados pelo Payments.</summary>
+    public void MarkFailed(Guid paymentId, string reason, DateTimeOffset now)
+    {
+        EnsurePaymentId(paymentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        EnsureStatus(OrderStatus.PaymentRequested, "Só ordens com pagamento solicitado podem ser marcadas como falhas.");
+
+        Status = OrderStatus.Failed;
+        PaymentId = paymentId;
+        FailureReason = reason;
+        UpdatedAt = now;
+    }
+
+    private static void EnsurePaymentId(Guid paymentId)
     {
         if (paymentId == Guid.Empty)
         {
             throw new ArgumentException("O id do pagamento é obrigatório.", nameof(paymentId));
         }
-
-        EnsureStatus(OrderStatus.Confirmed, "O pagamento só pode ser solicitado para ordens confirmadas.");
-
-        Status = OrderStatus.PaymentRequested;
-        PaymentId = paymentId;
-        UpdatedAt = now;
-    }
-
-    /// <summary>PaymentRequested → Completed.</summary>
-    public void MarkCompleted(DateTimeOffset now)
-    {
-        EnsureStatus(OrderStatus.PaymentRequested, "Só ordens com pagamento solicitado podem ser concluídas.");
-
-        Status = OrderStatus.Completed;
-        UpdatedAt = now;
-    }
-
-    /// <summary>PaymentRequested → Failed, com o motivo informado pelo Payments.</summary>
-    public void MarkFailed(string reason, DateTimeOffset now)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        EnsureStatus(OrderStatus.PaymentRequested, "Só ordens com pagamento solicitado podem ser marcadas como falhas.");
-
-        Status = OrderStatus.Failed;
-        FailureReason = reason;
-        UpdatedAt = now;
     }
 
     private void EnsureStatus(OrderStatus expected, string message)

@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentValidation;
 using FluentValidation.Internal;
 using MiniCambio.Orders.Api.Application.Orders;
+using MiniCambio.Orders.Api.Application.Payments;
 
 namespace MiniCambio.Orders.Api.Application;
 
@@ -28,6 +29,7 @@ public static class ApplicationServiceCollectionExtensions
         services.AddScoped<CancelOrderHandler>();
         services.AddScoped<GetOrderHandler>();
         services.AddScoped<ListOrdersHandler>();
+        services.AddScoped<PaymentResultHandler>();
 
         return services;
     }

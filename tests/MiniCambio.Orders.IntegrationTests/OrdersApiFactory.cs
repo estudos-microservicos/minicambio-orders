@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
 using MiniCambio.Orders.Api.Application.Payments;
 using MiniCambio.Orders.Api.Application.Rates;
+using MiniCambio.Orders.Api.Infrastructure.Messaging;
 using MiniCambio.Orders.Api.Infrastructure.Reconciliation;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -17,8 +18,8 @@ namespace MiniCambio.Orders.IntegrationTests;
 
 /// <summary>
 /// Sobe a API contra um Postgres real (Testcontainers), compartilhado por todos os testes do assembly.
-/// Rates e Payments são substituídos por fakes e o worker de reconciliação hospedado é removido: os testes
-/// rodam o ciclo diretamente quando precisam.
+/// O Rates e o Kafka são substituídos por fakes; o worker de reconciliação e o consumidor do Kafka saem: os testes
+/// rodam o ciclo e entregam os resultados de pagamento diretamente quando precisam.
 /// </summary>
 public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
@@ -70,14 +71,32 @@ public sealed class OrdersApiFactory : WebApplicationFactory<Program>, IAsyncLif
                 descriptor.ServiceType == typeof(IHostedService)
                 && descriptor.ImplementationType == typeof(OrderReconciliationWorker)));
 
+            // Sem Kafka nos testes: o consumidor sai e os testes chamam o PaymentResultHandler diretamente.
+            services.Remove(services.Single(descriptor =>
+                descriptor.ServiceType == typeof(IHostedService)
+                && descriptor.ImplementationType == typeof(PaymentResultsConsumer)));
+
             services.RemoveAll<IRatesClient>();
             services.AddSingleton<FakeRatesClient>();
             services.AddSingleton<IRatesClient>(provider => provider.GetRequiredService<FakeRatesClient>());
 
-            services.RemoveAll<IPaymentsClient>();
-            services.AddSingleton<FakePaymentsClient>();
-            services.AddSingleton<IPaymentsClient>(provider => provider.GetRequiredService<FakePaymentsClient>());
+            services.RemoveAll<IPaymentRequestPublisher>();
+            services.AddSingleton<FakePaymentRequestPublisher>();
+            services.AddSingleton<IPaymentRequestPublisher>(provider => provider.GetRequiredService<FakePaymentRequestPublisher>());
         });
+    }
+
+    public FakePaymentRequestPublisher PaymentRequests => Services.GetRequiredService<FakePaymentRequestPublisher>();
+
+    /// <summary>Entrega um resultado de pagamento como o consumidor do Kafka faria.</summary>
+    public Task<PaymentResultOutcome> ApplyPaymentResultAsync(PaymentResultMessage message) =>
+        ApplyPaymentResultAsync(Services, message);
+
+    internal static async Task<PaymentResultOutcome> ApplyPaymentResultAsync(IServiceProvider services, PaymentResultMessage message)
+    {
+        await using var scope = services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<PaymentResultHandler>()
+            .HandleAsync(message, TestContext.Current.CancellationToken);
     }
 }
 
@@ -93,7 +112,11 @@ public sealed class IsolatedOrdersApi(WebApplicationFactory<Program> factory, Fa
 
     public FakeRatesClient Rates => Services.GetRequiredService<FakeRatesClient>();
 
-    public FakePaymentsClient Payments => Services.GetRequiredService<FakePaymentsClient>();
+    public FakePaymentRequestPublisher PaymentRequests => Services.GetRequiredService<FakePaymentRequestPublisher>();
+
+    /// <summary>Entrega um resultado de pagamento como o consumidor do Kafka faria.</summary>
+    public Task<PaymentResultOutcome> ApplyPaymentResultAsync(PaymentResultMessage message) =>
+        OrdersApiFactory.ApplyPaymentResultAsync(Services, message);
 
     private IServiceProvider Services
     {

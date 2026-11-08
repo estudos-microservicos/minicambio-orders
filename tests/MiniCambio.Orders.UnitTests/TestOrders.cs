@@ -36,17 +36,17 @@ internal static class TestOrders
                 break;
             case OrderStatus.PaymentRequested:
                 order.Confirm(later);
-                order.MarkPaymentRequested(Guid.NewGuid(), later);
+                order.MarkPaymentRequested(later);
                 break;
             case OrderStatus.Completed:
                 order.Confirm(later);
-                order.MarkPaymentRequested(Guid.NewGuid(), later);
-                order.MarkCompleted(later);
+                order.MarkPaymentRequested(later);
+                order.MarkCompleted(Guid.NewGuid(), later);
                 break;
             case OrderStatus.Failed:
                 order.Confirm(later);
-                order.MarkPaymentRequested(Guid.NewGuid(), later);
-                order.MarkFailed("BENEFICIARY_REJECTED", later);
+                order.MarkPaymentRequested(later);
+                order.MarkFailed(Guid.NewGuid(), "BENEFICIARY_REJECTED", later);
                 break;
             case OrderStatus.Cancelled:
                 order.Cancel(later);

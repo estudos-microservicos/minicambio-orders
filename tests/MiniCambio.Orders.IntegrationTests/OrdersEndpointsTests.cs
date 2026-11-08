@@ -166,26 +166,26 @@ public class OrdersEndpointsTests(OrdersApiFactory factory)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var order = await response.ReadJsonAsync();
         Assert.Equal("PaymentRequested", order.Status());
-        Assert.NotEqual(Guid.Empty, order.GetProperty("paymentId").GetGuid());
+        Assert.Equal(JsonValueKind.Null, order.GetProperty("paymentId").ValueKind); // chega com o resultado do Payments
         Assert.Equal(JsonValueKind.String, order.GetProperty("confirmedAt").ValueKind);
         Assert.False(order.GetProperty("canConfirm").GetBoolean());
         Assert.False(order.GetProperty("canCancel").GetBoolean());
 
         Assert.Equal("PaymentRequested", (await client.GetOrderAsync(created.Id())).Status());
+        Assert.Equal(1, factory.PaymentRequests.CountFor(created.Id()));
     }
 
     [Fact]
-    public async Task ConfirmOrder_Twice_Returns200WithSamePayment()
+    public async Task ConfirmOrder_Twice_Returns200AndPublishesPaymentRequestOnce()
     {
         var created = await client.CreateOrderAsync();
-        var first = await (await client.ConfirmOrderAsync(created.Id())).ReadJsonAsync();
+        await client.ConfirmOrderAsync(created.Id());
 
         var response = await client.ConfirmOrderAsync(created.Id());
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var second = await response.ReadJsonAsync();
-        Assert.Equal("PaymentRequested", second.Status());
-        Assert.Equal(first.GetProperty("paymentId").GetGuid(), second.GetProperty("paymentId").GetGuid());
+        Assert.Equal("PaymentRequested", (await response.ReadJsonAsync()).Status());
+        Assert.Equal(1, factory.PaymentRequests.CountFor(created.Id()));
     }
 
     [Fact]

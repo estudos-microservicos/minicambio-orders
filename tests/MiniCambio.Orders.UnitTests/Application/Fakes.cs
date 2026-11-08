@@ -106,40 +106,16 @@ internal sealed class FakeRatesClient(TimeProvider timeProvider) : IRatesClient
     }
 }
 
-internal sealed class FakePaymentsClient : IPaymentsClient
+internal sealed class FakePaymentRequestPublisher : IPaymentRequestPublisher
 {
-    private readonly Dictionary<Guid, PaymentResponse> paymentsByOrder = [];
+    public List<PaymentRequestedMessage> Messages { get; } = [];
 
-    public List<CreatePaymentRequest> Requests { get; } = [];
-
-    /// <summary>Quando preenchida, é lançada em vez de responder.</summary>
+    /// <summary>Quando preenchida, é lançada em vez de publicar.</summary>
     public Exception? FailWith { get; set; }
 
-    public Task<PaymentResponse> RequestPaymentAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
+    public Task PublishAsync(PaymentRequestedMessage message, CancellationToken cancellationToken)
     {
-        Requests.Add(request);
-        if (FailWith is not null)
-        {
-            throw FailWith;
-        }
-
-        // Idempotente por orderId, como o Payments real.
-        if (!paymentsByOrder.TryGetValue(request.OrderId, out var payment))
-        {
-            payment = new PaymentResponse(Guid.NewGuid(), request.OrderId, PaymentStatus.Pending, null, null);
-            paymentsByOrder[request.OrderId] = payment;
-        }
-
-        return Task.FromResult(payment);
-    }
-
-    public Task<PaymentResponse?> GetPaymentAsync(Guid paymentId, CancellationToken cancellationToken)
-    {
-        if (FailWith is not null)
-        {
-            throw FailWith;
-        }
-
-        return Task.FromResult(paymentsByOrder.Values.FirstOrDefault(x => x.Id == paymentId));
+        Messages.Add(message);
+        return FailWith is null ? Task.CompletedTask : Task.FromException(FailWith);
     }
 }

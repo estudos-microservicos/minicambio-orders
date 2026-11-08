@@ -5,8 +5,8 @@ namespace MiniCambio.Orders.Api.Infrastructure.Reconciliation;
 
 /// <summary>
 /// Roda um <see cref="OrderReconciliationCycle"/> a cada <c>Orders__ReconciliationIntervalSeconds</c> (padrão 5s):
-/// expira cotações vencidas, (re)solicita pagamentos de ordens confirmadas e acompanha os pagamentos solicitados.
-/// Esse polling será substituído por eventos (mensageria) numa etapa futura. Graças ao <c>SKIP LOCKED</c> do ciclo,
+/// expira cotações vencidas e publica de novo os pedidos de pagamento que ficaram em Confirmed (Kafka fora).
+/// O resultado dos pagamentos chega por evento (Kafka), sem polling. Graças ao <c>SKIP LOCKED</c> do ciclo,
 /// várias réplicas no Kubernetes podem rodar o worker ao mesmo tempo sem processar a mesma ordem.
 /// </summary>
 public sealed class OrderReconciliationWorker(

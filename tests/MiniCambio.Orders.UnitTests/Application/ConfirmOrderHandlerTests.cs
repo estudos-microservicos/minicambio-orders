@@ -11,7 +11,7 @@ public class ConfirmOrderHandlerTests
 {
     private readonly FakeTimeProvider time = new(TestOrders.Now);
     private readonly InMemoryOrderRepository orders = new();
-    private readonly FakePaymentsClient payments = new();
+    private readonly FakePaymentRequestPublisher payments = new();
     private readonly ConfirmOrderHandler handler;
 
     public ConfirmOrderHandlerTests()
@@ -20,20 +20,20 @@ public class ConfirmOrderHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_QuotedWithValidQuote_ConfirmsAndRequestsPayment()
+    public async Task HandleAsync_QuotedWithValidQuote_ConfirmsAndPublishesPaymentRequest()
     {
         var order = orders.Seed(TestOrders.Quoted());
         time.Advance(TimeSpan.FromSeconds(10));
 
         var response = await handler.HandleAsync(order.Id, CancellationToken.None);
 
-        var request = Assert.Single(payments.Requests);
+        var message = Assert.Single(payments.Messages);
         Assert.Equal(
-            new CreatePaymentRequest(order.Id, "USD", 100m, new PaymentBeneficiary("Maria Silva", "BR", "12345-6")),
-            request);
+            new PaymentRequestedMessage(order.Id, "USD", 100m, new PaymentBeneficiary("Maria Silva", "BR", "12345-6")),
+            message);
 
         Assert.Equal(OrderStatus.PaymentRequested, response.Status);
-        Assert.NotNull(response.PaymentId);
+        Assert.Null(response.PaymentId); // o id do pagamento só chega com o resultado
         Assert.Equal(time.GetUtcNow(), response.ConfirmedAt);
         Assert.False(response.CanConfirm);
         Assert.False(response.CanCancel);
@@ -41,14 +41,14 @@ public class ConfirmOrderHandlerTests
     }
 
     [Fact]
-    public async Task HandleAsync_PaymentsUnavailable_KeepsConfirmedAndReturnsOrder()
+    public async Task HandleAsync_KafkaUnavailable_KeepsConfirmedAndReturnsOrder()
     {
         var order = orders.Seed(TestOrders.Quoted());
-        payments.FailWith = new ServiceUnavailableException("Payments fora");
+        payments.FailWith = new ServiceUnavailableException("Kafka fora");
 
         var response = await handler.HandleAsync(order.Id, CancellationToken.None);
 
-        Assert.Single(payments.Requests);
+        Assert.Single(payments.Messages);
         Assert.Equal(OrderStatus.Confirmed, response.Status);
         Assert.Null(response.PaymentId);
         Assert.False(response.CanConfirm);
@@ -68,7 +68,7 @@ public class ConfirmOrderHandlerTests
 
         Assert.Equal(status, response.Status);
         Assert.Equal(order.PaymentId, response.PaymentId);
-        Assert.Empty(payments.Requests);
+        Assert.Empty(payments.Messages);
         Assert.Equal(0, orders.SaveCount);
     }
 
@@ -83,7 +83,7 @@ public class ConfirmOrderHandlerTests
 
         Assert.Equal("A cotação expirou. Crie uma nova ordem.", exception.Message);
         Assert.Equal(OrderStatus.Expired, orders.PersistedStatus(order.Id));
-        Assert.Empty(payments.Requests);
+        Assert.Empty(payments.Messages);
     }
 
     [Theory]
@@ -100,7 +100,7 @@ public class ConfirmOrderHandlerTests
 
         Assert.Equal(expectedMessage, exception.Message);
         Assert.Equal(status, orders.PersistedStatus(order.Id));
-        Assert.Empty(payments.Requests);
+        Assert.Empty(payments.Messages);
     }
 
     [Fact]

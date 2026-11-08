@@ -4,6 +4,7 @@ using MiniCambio.Orders.Api.Application.Payments;
 using MiniCambio.Orders.Api.Application.Rates;
 using MiniCambio.Orders.Api.Infrastructure.Correlation;
 using MiniCambio.Orders.Api.Infrastructure.Http;
+using MiniCambio.Orders.Api.Infrastructure.Messaging;
 
 namespace MiniCambio.Orders.IntegrationTests;
 
@@ -45,47 +46,24 @@ public sealed class FakeRatesClient(TimeProvider timeProvider) : IRatesClient
 }
 
 /// <summary>
-/// Payments falso, idempotente por <c>orderId</c>. Os testes definem o resultado de cada pagamento com
-/// <see cref="SetStatus"/> e podem "desligá-lo" com <see cref="Unavailable"/>.
+/// Publicador falso no lugar do Kafka: guarda cada pedido de pagamento publicado e pode ser "desligado" com
+/// <see cref="Unavailable"/>, como o Kafka fora do ar.
 /// </summary>
-public sealed class FakePaymentsClient(CorrelationIdAccessor correlationIdAccessor) : IPaymentsClient
+public sealed class FakePaymentRequestPublisher(CorrelationIdAccessor correlationIdAccessor) : IPaymentRequestPublisher
 {
-    private readonly ConcurrentDictionary<Guid, PaymentResponse> paymentsByOrder = new();
-    private int requestCount;
-
     public bool Unavailable { get; set; }
 
-    /// <summary>Atraso artificial em cada chamada (para testar ciclos concorrentes).</summary>
+    /// <summary>Atraso artificial em cada publicação (para testar ciclos concorrentes).</summary>
     public TimeSpan Delay { get; set; }
 
-    public int RequestCount => requestCount;
+    public ConcurrentQueue<PaymentRequestedMessage> Messages { get; } = new();
 
-    /// <summary>Correlation id visto em cada chamada (vem do <see cref="CorrelationIdAccessor"/>).</summary>
+    /// <summary>Correlation id visto em cada publicação (vem do <see cref="CorrelationIdAccessor"/>).</summary>
     public ConcurrentBag<string?> CorrelationIds { get; } = [];
 
-    public ConcurrentDictionary<Guid, int> RequestsPerOrder { get; } = new();
+    public int CountFor(Guid orderId) => Messages.Count(x => x.OrderId == orderId);
 
-    public async Task<PaymentResponse> RequestPaymentAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
-    {
-        await SimulateCallAsync(cancellationToken);
-        Interlocked.Increment(ref requestCount);
-        RequestsPerOrder.AddOrUpdate(request.OrderId, 1, (_, count) => count + 1);
-
-        return paymentsByOrder.GetOrAdd(
-            request.OrderId,
-            orderId => new PaymentResponse(Guid.CreateVersion7(), orderId, PaymentStatus.Pending, null, null));
-    }
-
-    public async Task<PaymentResponse?> GetPaymentAsync(Guid paymentId, CancellationToken cancellationToken)
-    {
-        await SimulateCallAsync(cancellationToken);
-        return paymentsByOrder.Values.FirstOrDefault(x => x.Id == paymentId);
-    }
-
-    public void SetStatus(Guid orderId, PaymentStatus status, string? failureReason = null) =>
-        paymentsByOrder[orderId] = paymentsByOrder[orderId] with { Status = status, FailureReason = failureReason };
-
-    private async Task SimulateCallAsync(CancellationToken cancellationToken)
+    public async Task PublishAsync(PaymentRequestedMessage message, CancellationToken cancellationToken)
     {
         CorrelationIds.Add(correlationIdAccessor.CorrelationId);
         if (Delay > TimeSpan.Zero)
@@ -95,7 +73,9 @@ public sealed class FakePaymentsClient(CorrelationIdAccessor correlationIdAccess
 
         if (Unavailable)
         {
-            throw new ServiceUnavailableException(PaymentsClient.UnavailableMessage);
+            throw new ServiceUnavailableException(KafkaPaymentRequestPublisher.UnavailableMessage);
         }
+
+        Messages.Enqueue(message);
     }
 }

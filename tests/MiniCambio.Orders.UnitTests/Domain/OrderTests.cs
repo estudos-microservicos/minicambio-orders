@@ -253,27 +253,15 @@ public class OrderTests
     // ---------------------------------------------------------------- Confirmed -> PaymentRequested
 
     [Fact]
-    public void MarkPaymentRequested_Confirmed_MovesToPaymentRequestedWithPaymentId()
+    public void MarkPaymentRequested_Confirmed_MovesToPaymentRequestedWithoutPaymentId()
     {
         var order = TestOrders.InStatus(OrderStatus.Confirmed);
-        var paymentId = Guid.NewGuid();
 
-        order.MarkPaymentRequested(paymentId, AtExpiration);
+        order.MarkPaymentRequested(AtExpiration);
 
         Assert.Equal(OrderStatus.PaymentRequested, order.Status);
-        Assert.Equal(paymentId, order.PaymentId);
+        Assert.Null(order.PaymentId); // o Payments ainda não criou o pagamento; o id chega com o resultado
         Assert.Equal(AtExpiration, order.UpdatedAt);
-    }
-
-    [Fact]
-    public void MarkPaymentRequested_EmptyPaymentId_ThrowsArgumentExceptionAndKeepsConfirmed()
-    {
-        var order = TestOrders.InStatus(OrderStatus.Confirmed);
-
-        Assert.Throws<ArgumentException>(() => order.MarkPaymentRequested(Guid.Empty, Now));
-
-        Assert.Equal(OrderStatus.Confirmed, order.Status);
-        Assert.Null(order.PaymentId);
     }
 
     [Theory]
@@ -288,7 +276,7 @@ public class OrderTests
         var order = TestOrders.InStatus(status);
         var paymentIdBefore = order.PaymentId;
 
-        var exception = Assert.Throws<DomainException>(() => order.MarkPaymentRequested(Guid.NewGuid(), Now));
+        var exception = Assert.Throws<DomainException>(() => order.MarkPaymentRequested(Now));
 
         Assert.Equal("O pagamento só pode ser solicitado para ordens confirmadas.", exception.Message);
         Assert.Equal(status, order.Status);
@@ -298,15 +286,28 @@ public class OrderTests
     // ---------------------------------------------------------------- PaymentRequested -> Completed
 
     [Fact]
-    public void MarkCompleted_PaymentRequested_MovesToCompleted()
+    public void MarkCompleted_PaymentRequested_MovesToCompletedWithPaymentId()
+    {
+        var order = TestOrders.InStatus(OrderStatus.PaymentRequested);
+        var paymentId = Guid.NewGuid();
+
+        order.MarkCompleted(paymentId, AtExpiration);
+
+        Assert.Equal(OrderStatus.Completed, order.Status);
+        Assert.Equal(paymentId, order.PaymentId);
+        Assert.Null(order.FailureReason);
+        Assert.Equal(AtExpiration, order.UpdatedAt);
+    }
+
+    [Fact]
+    public void MarkCompleted_EmptyPaymentId_ThrowsArgumentExceptionAndKeepsPaymentRequested()
     {
         var order = TestOrders.InStatus(OrderStatus.PaymentRequested);
 
-        order.MarkCompleted(AtExpiration);
+        Assert.Throws<ArgumentException>(() => order.MarkCompleted(Guid.Empty, Now));
 
-        Assert.Equal(OrderStatus.Completed, order.Status);
-        Assert.Null(order.FailureReason);
-        Assert.Equal(AtExpiration, order.UpdatedAt);
+        Assert.Equal(OrderStatus.PaymentRequested, order.Status);
+        Assert.Null(order.PaymentId);
     }
 
     [Theory]
@@ -320,7 +321,7 @@ public class OrderTests
     {
         var order = TestOrders.InStatus(status);
 
-        var exception = Assert.Throws<DomainException>(() => order.MarkCompleted(Now));
+        var exception = Assert.Throws<DomainException>(() => order.MarkCompleted(Guid.NewGuid(), Now));
 
         Assert.Equal("Só ordens com pagamento solicitado podem ser concluídas.", exception.Message);
         Assert.Equal(status, order.Status);
@@ -329,13 +330,15 @@ public class OrderTests
     // ---------------------------------------------------------------- PaymentRequested -> Failed
 
     [Fact]
-    public void MarkFailed_PaymentRequested_MovesToFailedWithReason()
+    public void MarkFailed_PaymentRequested_MovesToFailedWithPaymentIdAndReason()
     {
         var order = TestOrders.InStatus(OrderStatus.PaymentRequested);
+        var paymentId = Guid.NewGuid();
 
-        order.MarkFailed("COMPLIANCE_BLOCKED", AtExpiration);
+        order.MarkFailed(paymentId, "COMPLIANCE_BLOCKED", AtExpiration);
 
         Assert.Equal(OrderStatus.Failed, order.Status);
+        Assert.Equal(paymentId, order.PaymentId);
         Assert.Equal("COMPLIANCE_BLOCKED", order.FailureReason);
         Assert.Equal(AtExpiration, order.UpdatedAt);
     }
@@ -347,7 +350,7 @@ public class OrderTests
     {
         var order = TestOrders.InStatus(OrderStatus.PaymentRequested);
 
-        Assert.Throws<ArgumentException>(() => order.MarkFailed(reason, Now));
+        Assert.Throws<ArgumentException>(() => order.MarkFailed(Guid.NewGuid(), reason, Now));
 
         Assert.Equal(OrderStatus.PaymentRequested, order.Status);
     }
@@ -364,7 +367,7 @@ public class OrderTests
         var order = TestOrders.InStatus(status);
         var reasonBefore = order.FailureReason;
 
-        var exception = Assert.Throws<DomainException>(() => order.MarkFailed("LIMIT_EXCEEDED", Now));
+        var exception = Assert.Throws<DomainException>(() => order.MarkFailed(Guid.NewGuid(), "LIMIT_EXCEEDED", Now));
 
         Assert.Equal("Só ordens com pagamento solicitado podem ser marcadas como falhas.", exception.Message);
         Assert.Equal(status, order.Status);

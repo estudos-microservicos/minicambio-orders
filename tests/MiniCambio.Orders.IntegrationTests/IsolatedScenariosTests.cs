@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace MiniCambio.Orders.IntegrationTests;
 
-/// <summary>Cenários que precisam de banco próprio, relógio controlado ou de "derrubar" o Rates/Payments.</summary>
+/// <summary>Cenários que precisam de banco próprio, relógio controlado ou de "derrubar" o Rates/Kafka.</summary>
 public class IsolatedScenariosTests(OrdersApiFactory factory)
 {
     [Fact]
@@ -28,11 +28,11 @@ public class IsolatedScenariosTests(OrdersApiFactory factory)
     }
 
     [Fact]
-    public async Task ConfirmOrder_PaymentsUnavailable_Returns200AndStaysConfirmed()
+    public async Task ConfirmOrder_KafkaUnavailable_Returns200AndStaysConfirmed()
     {
         await using var api = factory.CreateIsolated();
         var created = await api.Client.CreateOrderAsync();
-        api.Payments.Unavailable = true;
+        api.PaymentRequests.Unavailable = true;
 
         var response = await api.Client.ConfirmOrderAsync(created.Id());
 
@@ -59,7 +59,7 @@ public class IsolatedScenariosTests(OrdersApiFactory factory)
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal("A cotação expirou. Crie uma nova ordem.", (await response.ReadJsonAsync()).GetProperty("detail").GetString());
         Assert.Equal("Expired", (await api.Client.GetOrderAsync(created.Id())).Status());
-        Assert.Equal(0, api.Payments.RequestCount);
+        Assert.Empty(api.PaymentRequests.Messages);
     }
 
     [Fact]
