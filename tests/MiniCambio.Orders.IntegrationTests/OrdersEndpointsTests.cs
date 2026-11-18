@@ -327,4 +327,16 @@ public class OrdersEndpointsTests(OrdersApiFactory factory)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Healthy", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
+
+    [Fact]
+    public async Task Metrics_AfterRequest_ExposeHttpServerDurationInPrometheusFormat()
+    {
+        await client.GetAsync("/health/live", TestContext.Current.CancellationToken);
+
+        var response = await client.GetAsync("/metrics", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("http_server_request_duration_seconds_bucket", body);
+    }
 }

@@ -6,6 +6,7 @@ using MiniCambio.Orders.Api.Endpoints;
 using MiniCambio.Orders.Api.Infrastructure;
 using MiniCambio.Orders.Api.Infrastructure.Persistence;
 using MiniCambio.Orders.Api.Infrastructure.Web;
+using OpenTelemetry.Metrics;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -40,6 +41,19 @@ builder.Services.AddOpenApi();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure();
 
+// Métricas no formato do Prometheus em GET /metrics (Passo 27 do curso de Kubernetes). O próprio .NET já mede
+// requisições HTTP recebidas e feitas, o Kestrel, o runtime (GC, threads, memória) e o Npgsql (conexões com o
+// banco); aqui só ligamos esses medidores e o exportador. O Prometheus busca os números (pull), a API não envia.
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics
+        .AddMeter(
+            "Microsoft.AspNetCore.Hosting",
+            "Microsoft.AspNetCore.Server.Kestrel",
+            "System.Net.Http",
+            "System.Runtime",
+            "Npgsql")
+        .AddPrometheusExporter());
+
 var app = builder.Build();
 
 // Modo do Job de migração: aplica as migrations e encerra, sem subir o servidor HTTP.
@@ -66,6 +80,10 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains(InfrastructureServiceCollectionExtensions.ReadyTag),
 });
+
+// Na mesma porta da API, então também passa pelo Ingress (aceitável para estudo; em produção iria para uma porta
+// interna, fora do Ingress).
+app.MapPrometheusScrapingEndpoint();
 
 app.MapOrdersEndpoints();
 
